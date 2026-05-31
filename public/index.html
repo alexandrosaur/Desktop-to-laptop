@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Exchange - Share Files Between Devices</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="app-header">
+            <h1>📁 File Exchange</h1>
+            <p>Share files between your devices • No cloud storage • Save sessions to your laptop</p>
+        </div>
+
+        <!-- Login Screen -->
+        <div id="login-screen" class="screen active">
+            <div class="card">
+                <h2>Welcome</h2>
+                <input type="text" id="login-username" placeholder="Your name" maxlength="20" autocomplete="off">
+                <div class="button-group">
+                    <button id="create-btn" class="btn-primary">✨ Create Session</button>
+                    <button id="show-join-btn" class="btn-secondary">🔗 Join Session</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Session Screen -->
+        <div id="create-screen" class="screen">
+            <div class="card">
+                <h2>Create a Session</h2>
+                <input type="text" id="create-session-name" placeholder="Session name (e.g., project-x, ai-research)" maxlength="30" autocomplete="off">
+                <div class="info-text">Share this name with others to let them join</div>
+                <div class="button-group">
+                    <button id="confirm-create-btn" class="btn-primary">Create Session</button>
+                    <button id="back-from-create-btn" class="btn-secondary">Back</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Join Session Screen -->
+        <div id="join-screen" class="screen">
+            <div class="card">
+                <h2>Join a Session</h2>
+                <input type="text" id="join-session-name" placeholder="Session name to join" maxlength="30" autocomplete="off">
+                <div class="info-text">Enter the exact session name shared with you</div>
+                <div class="button-group">
+                    <button id="confirm-join-btn" class="btn-primary">Join Session</button>
+                    <button id="back-from-join-btn" class="btn-secondary">Back</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Screen -->
+        <div id="main-screen" class="screen">
+            <div class="chat-header">
+                <div class="session-info">
+                    <span class="label">Session:</span>
+                    <span id="current-session" class="session-name">---</span>
+                    <span id="online-status" class="status online">● Online</span>
+                </div>
+                <div class="user-controls">
+                    <span id="current-user" class="user-badge">---</span>
+                    <button id="leave-btn" class="btn-leave">🚪 Leave</button>
+                </div>
+            </div>
+
+            <div class="chat-layout">
+                <!-- Messages Panel -->
+                <div class="messages-panel">
+                    <div class="panel-header">
+                        <h3>💬 Messages</h3>
+                        <div class="button-group-small">
+                            <button id="save-chat-btn" class="icon-btn" title="Save session to your laptop as JSON file">💾 Save to File</button>
+                            <button id="load-chat-btn" class="icon-btn" title="Load a saved session from your laptop">📂 Load from File</button>
+                        </div>
+                    </div>
+                    <div id="messages-container" class="messages-container">
+                        <div class="empty-state">No messages yet</div>
+                    </div>
+                    <div class="message-input-area">
+                        <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off">
+                        <button id="send-msg-btn" class="send-btn">Send</button>
+                    </div>
+                </div>
+
+                <!-- Files Panel -->
+                <div class="files-panel">
+                    <div class="panel-header">
+                        <h3>📎 Files</h3>
+                        <button id="select-file-btn" class="icon-btn">📂 Select Files</button>
+                    </div>
+                    
+                    <input type="file" id="file-input" multiple style="display: none">
+                    <input type="file" id="restore-file-input" accept=".json" style="display: none">
+                    
+                    <div id="selected-files-list" class="selected-files"></div>
+                    <button id="upload-files-btn" class="upload-btn" disabled>🚀 Upload to Session</button>
+                    
+                    <div class="shared-files-section">
+                        <h4>📦 Session Files</h4>
+                        <div class="info-text-small">Files stay for 10 minutes after last user leaves</div>
+                        <div id="shared-files" class="shared-files">
+                            <div class="empty-state">No files shared yet</div>
+                        </div>
+                    </div>
+
+                    <div class="saved-sessions-section">
+                        <h4>💾 Recently Saved Sessions</h4>
+                        <div class="info-text-small">Click on any session below to see its filename</div>
+                        <div id="saved-sessions-list" class="saved-list">
+                            <div class="empty-state">No saved sessions yet.<br>Click "Save to File" to download a session to your laptop</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="client.js"></script>
+</body>
+</html>
