@@ -18,6 +18,25 @@ const io = socketIo(server, {
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 
+// Store logs in memory for viewing via API
+const eventLogs = [];
+const MAX_LOGS = 1000;
+
+function addLog(type, message, data = null) {
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    type: type, // 'info', 'error', 'session', 'user', 'file'
+    message: message,
+    data: data
+  };
+  eventLogs.unshift(logEntry); // Add to beginning
+  if (eventLogs.length > MAX_LOGS) eventLogs.pop();
+  
+  // Also print to console for Render logs
+  console.log(`[${type.toUpperCase()}] ${message}`);
+  if (data) console.log(`  └─ ${JSON.stringify(data)}`);
+}
+
 // Serve static files
 const publicPath = path.join(__dirname, 'public');
 app.use(express.static(publicPath));
@@ -36,32 +55,60 @@ class Session {
     this.creator = creator;
   }
 
-  // Calculate memory usage of this session (approximate)
   getMemoryUsage() {
     let total = 0;
-    
-    // Messages memory (rough estimate: 200 bytes per message + text length)
     this.messages.forEach(msg => {
       total += 200 + (msg.text?.length || 0);
     });
-    
-    // Files memory (base64 data is ~1.33x original size)
     this.files.forEach(file => {
-      if (file.data) {
-        total += file.data.length * 0.75; // Approximate original size
-      }
-      total += 200; // Metadata overhead
+      if (file.data) total += file.data.length * 0.75;
+      total += 200;
     });
-    
-    // Users memory (~500 bytes per user)
     total += this.users.size * 500;
-    
-    // Session overhead
     total += 1000;
-    
     return total;
   }
 }
+
+// Real-time stats tracking
+let lastStatsLog = Date.now();
+
+function logStats() {
+  const totalUsers = Array.from(sessions.values()).reduce((sum, s) => sum + s.users.size, 0);
+  const totalSessions = sessions.size;
+  const totalMemory = Array.from(sessions.values()).reduce((sum, s) => sum + s.getMemoryUsage(), 0);
+  const nodeMemory = process.memoryUsage();
+  
+  const stats = {
+    users: totalUsers,
+    sessions: totalSessions,
+    memoryMB: (totalMemory / 1024 / 1024).toFixed(2),
+    nodeHeapMB: (nodeMemory.heapUsed / 1024 / 1024).toFixed(2),
+    timestamp: new Date().toISOString()
+  };
+  
+  addLog('stats', `Users: ${stats.users} | Sessions: ${stats.sessions} | Memory: ${stats.memoryMB} MB | Node: ${stats.nodeHeapMB} MB`, stats);
+  
+  // Log individual sessions if any exist
+  if (totalSessions > 0) {
+    for (const [id, session] of sessions.entries()) {
+      const userList = Array.from(session.users.values()).map(u => u.username);
+      addLog('session', `Session "${id}" | Users: ${session.users.size} (${userList.join(', ') || 'none'}) | Messages: ${session.messages.length} | Files: ${session.files.size}`, {
+        sessionId: id,
+        users: session.users.size,
+        userNames: userList,
+        messages: session.messages.length,
+        files: session.files.size,
+        memoryKB: (session.getMemoryUsage() / 1024).toFixed(2)
+      });
+    }
+  }
+  
+  lastStatsLog = Date.now();
+}
+
+// Log stats every 30 seconds (more frequent for Render)
+setInterval(logStats, 30000);
 
 // Clean up old sessions
 setInterval(() => {
@@ -70,92 +117,32 @@ setInterval(() => {
   
   for (const [id, session] of sessions.entries()) {
     if (session.users.size === 0 && now - session.lastActivity > 600000) {
-      console.log(`🗑️ [CLEANUP] Deleting inactive session: "${id}" (no users for ${Math.round((now - session.lastActivity)/1000)}s)`);
+      addLog('cleanup', `Deleting inactive session: "${id}" (idle for ${Math.round((now - session.lastActivity)/1000)}s)`);
       sessions.delete(id);
       cleanedCount++;
     }
   }
   
   if (cleanedCount > 0) {
-    console.log(`🧹 [CLEANUP] Removed ${cleanedCount} inactive sessions`);
+    addLog('cleanup', `Removed ${cleanedCount} inactive sessions`);
   }
-}, 60000); // Run every minute
+}, 60000);
 
-// Logging interval - runs every minute
-setInterval(() => {
-  const now = new Date().toISOString();
-  const totalUsers = Array.from(sessions.values()).reduce((sum, s) => sum + s.users.size, 0);
-  const totalSessions = sessions.size;
-  let totalMemory = 0;
+// API endpoint to get logs
+app.get('/api/logs', (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  const type = req.query.type;
   
-  // Calculate total memory usage
-  const sessionDetails = [];
-  for (const [id, session] of sessions.entries()) {
-    const mem = session.getMemoryUsage();
-    totalMemory += mem;
-    sessionDetails.push({
-      id: id,
-      users: session.users.size,
-      messages: session.messages.length,
-      files: session.files.size,
-      memoryKB: (mem / 1024).toFixed(2),
-      createdAgo: Math.round((Date.now() - session.createdAt) / 60000) + 'min',
-      idleTime: session.users.size === 0 ? Math.round((Date.now() - session.lastActivity) / 1000) + 's' : 'active'
-    });
+  let logs = eventLogs.slice(0, limit);
+  if (type) {
+    logs = logs.filter(log => log.type === type);
   }
   
-  // System memory info
-  const totalSystemMemory = os.totalmem();
-  const freeSystemMemory = os.freemem();
-  const usedSystemMemory = totalSystemMemory - freeSystemMemory;
-  const nodeMemory = process.memoryUsage();
-  
-  console.log('\n' + '='.repeat(80));
-  console.log(`📊 [STATS] ${now}`);
-  console.log('='.repeat(80));
-  console.log(`👥 Users Online: ${totalUsers}`);
-  console.log(`📁 Active Sessions: ${totalSessions}`);
-  console.log(`💾 Session Memory Usage: ${(totalMemory / 1024 / 1024).toFixed(2)} MB`);
-  console.log(`🖥️ Node.js Memory: ${(nodeMemory.heapUsed / 1024 / 1024).toFixed(2)} MB / ${(nodeMemory.heapTotal / 1024 / 1024).toFixed(2)} MB (heap)`);
-  console.log(`💻 System Memory: ${(usedSystemMemory / 1024 / 1024 / 1024).toFixed(2)} GB / ${(totalSystemMemory / 1024 / 1024 / 1024).toFixed(2)} GB used`);
-  
-  if (sessionDetails.length > 0) {
-    console.log('\n📋 Session Details:');
-    console.log('-'.repeat(80));
-    sessionDetails.forEach(s => {
-      console.log(`  🔸 "${s.id}" | Users: ${s.users} | Msgs: ${s.messages} | Files: ${s.files} | Memory: ${s.memoryKB} KB | Age: ${s.createdAgo} | Status: ${s.idleTime}`);
-    });
-  } else {
-    console.log('\n📋 No active sessions');
-  }
-  console.log('='.repeat(80) + '\n');
-  
-}, 60000); // Every minute
-
-// Also log on session creation/deletion
-function logSessions() {
-  const totalUsers = Array.from(sessions.values()).reduce((sum, s) => sum + s.users.size, 0);
-  console.log(`📈 [LIVE] Users: ${totalUsers} | Sessions: ${sessions.size} | Memory: ${(Array.from(sessions.values()).reduce((sum, s) => sum + s.getMemoryUsage(), 0) / 1024 / 1024).toFixed(2)} MB`);
-}
-
-// Download endpoint
-app.get('/download/:sessionId/:fileId', (req, res) => {
-  const { sessionId, fileId } = req.params;
-  const session = sessions.get(sessionId);
-  
-  if (!session || !session.files.has(fileId)) {
-    console.log(`❌ [DOWNLOAD] Failed - Session: ${sessionId}, File: ${fileId} (not found)`);
-    return res.status(404).json({ error: 'File not found' });
-  }
-  
-  const file = session.files.get(fileId);
-  const buffer = Buffer.from(file.data.split(',')[1], 'base64');
-  
-  console.log(`📥 [DOWNLOAD] ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB) from session "${sessionId}" by ${file.uploadedBy}`);
-  
-  res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
-  res.send(buffer);
+  res.json({
+    count: logs.length,
+    total: eventLogs.length,
+    logs: logs
+  });
 });
 
 // API endpoint to get detailed stats
@@ -173,7 +160,8 @@ app.get('/api/stats', (req, res) => {
     memoryKB: (session.getMemoryUsage() / 1024).toFixed(2),
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,
-    isActive: session.users.size > 0
+    isActive: session.users.size > 0,
+    idleSeconds: session.users.size === 0 ? Math.round((Date.now() - session.lastActivity) / 1000) : 0
   }));
   
   res.json({
@@ -196,7 +184,7 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
-// Simple stats endpoint for quick check
+// Simple stats endpoint
 app.get('/api/stats/simple', (req, res) => {
   const totalUsers = Array.from(sessions.values()).reduce((sum, s) => sum + s.users.size, 0);
   res.json({
@@ -206,21 +194,45 @@ app.get('/api/stats/simple', (req, res) => {
   });
 });
 
+// Download endpoint
+app.get('/download/:sessionId/:fileId', (req, res) => {
+  const { sessionId, fileId } = req.params;
+  const session = sessions.get(sessionId);
+  
+  if (!session || !session.files.has(fileId)) {
+    addLog('error', `Download failed: Session "${sessionId}", File "${fileId}" not found`);
+    return res.status(404).json({ error: 'File not found' });
+  }
+  
+  const file = session.files.get(fileId);
+  const buffer = Buffer.from(file.data.split(',')[1], 'base64');
+  
+  addLog('file', `Downloaded "${file.name}" (${(file.size / 1024 / 1024).toFixed(2)} MB) from session "${sessionId}"`, {
+    fileName: file.name,
+    fileSize: file.size,
+    sessionId: sessionId,
+    user: file.uploadedBy
+  });
+  
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
+  res.send(buffer);
+});
+
 io.on('connection', (socket) => {
-  console.log(`🔌 [CONNECT] New client connected: ${socket.id}`);
-  logSessions();
+  addLog('connection', `New client connected: ${socket.id}`);
   
   socket.on('create-session', ({ sessionId, username }, callback) => {
-    console.log(`✨ [CREATE] Session request: "${sessionId}" by "${username}"`);
+    addLog('session', `Create request: "${sessionId}" by "${username}"`);
     
     if (!sessionId || sessionId.length < 2) {
-      console.log(`❌ [CREATE] Failed - Invalid session name: "${sessionId}"`);
+      addLog('error', `Create failed: Invalid session name "${sessionId}"`);
       callback({ success: false, error: 'Session name must be at least 2 characters' });
       return;
     }
     
     if (sessions.has(sessionId)) {
-      console.log(`❌ [CREATE] Failed - Session "${sessionId}" already exists`);
+      addLog('error', `Create failed: Session "${sessionId}" already exists`);
       callback({ success: false, error: 'Session name already taken' });
       return;
     }
@@ -232,19 +244,16 @@ io.on('connection', (socket) => {
     socket.sessionId = sessionId;
     socket.username = username;
     
-    console.log(`✅ [CREATE] Session "${sessionId}" created by "${username}"`);
-    console.log(`📊 [SESSION] "${sessionId}" now has ${session.users.size} user(s)`);
-    logSessions();
-    
+    addLog('session', `✅ Session "${sessionId}" created by "${username}"`);
     callback({ success: true, sessionId });
   });
   
   socket.on('join-session', ({ sessionId, username }, callback) => {
-    console.log(`🚪 [JOIN] Request: "${username}" trying to join "${sessionId}"`);
+    addLog('session', `Join request: "${username}" -> "${sessionId}"`);
     
     const session = sessions.get(sessionId);
     if (!session) {
-      console.log(`❌ [JOIN] Failed - Session "${sessionId}" not found`);
+      addLog('error', `Join failed: Session "${sessionId}" not found`);
       callback({ success: false, error: `Session "${sessionId}" not found` });
       return;
     }
@@ -258,7 +267,7 @@ io.on('connection', (socket) => {
     }
     
     if (duplicate) {
-      console.log(`❌ [JOIN] Failed - Username "${username}" already taken in "${sessionId}"`);
+      addLog('error', `Join failed: Username "${username}" already taken in "${sessionId}"`);
       callback({ success: false, error: `Username "${username}" already taken` });
       return;
     }
@@ -269,8 +278,7 @@ io.on('connection', (socket) => {
     socket.username = username;
     session.lastActivity = Date.now();
     
-    console.log(`✅ [JOIN] "${username}" joined session "${sessionId}"`);
-    console.log(`📊 [SESSION] "${sessionId}" now has ${session.users.size} user(s) (${Array.from(session.users.values()).map(u => u.username).join(', ')})`);
+    addLog('session', `✅ "${username}" joined session "${sessionId}" (now ${session.users.size} users)`);
     
     socket.emit('history', session.messages);
     
@@ -288,7 +296,6 @@ io.on('connection', (socket) => {
       username
     });
     
-    logSessions();
     callback({ success: true, sessionId });
   });
   
@@ -299,7 +306,7 @@ io.on('connection', (socket) => {
     const user = session.users.get(socket.id);
     if (!user) return;
     
-    console.log(`💬 [MESSAGE] "${user.username}" in "${sessionId}": ${message.substring(0, 50)}${message.length > 50 ? '...' : ''}`);
+    addLog('message', `"${user.username}" in "${sessionId}": ${message.substring(0, 50)}${message.length > 50 ? '...' : ''}`);
     
     const messageObj = {
       id: Date.now(),
@@ -328,7 +335,7 @@ io.on('connection', (socket) => {
     const user = session.users.get(socket.id);
     if (!user) return;
     
-    console.log(`📤 [UPLOAD] "${user.username}" uploading "${fileName}" (${(fileSize / 1024 / 1024).toFixed(2)} MB) to "${sessionId}"`);
+    addLog('file', `Uploading "${fileName}" (${(fileSize / 1024 / 1024).toFixed(2)} MB) by "${user.username}" to "${sessionId}"`);
     
     session.files.set(fileId, {
       name: fileName,
@@ -360,16 +367,14 @@ io.on('connection', (socket) => {
     session.messages.push(messageObj);
     io.to(sessionId).emit('new-message', messageObj);
     
-    console.log(`✅ [UPLOAD] Complete: "${fileName}" to session "${sessionId}"`);
-    logSessions();
-    
+    addLog('file', `✅ Upload complete: "${fileName}" to "${sessionId}"`);
     callback({ success: true });
   });
   
   socket.on('restore-history', ({ sessionId, history }) => {
     const session = sessions.get(sessionId);
     if (session && history) {
-      console.log(`📜 [RESTORE] Restoring ${history.length} messages to session "${sessionId}" by "${socket.username}"`);
+      addLog('session', `Restoring ${history.length} messages to session "${sessionId}"`);
       session.messages = history;
       session.lastActivity = Date.now();
     }
@@ -381,46 +386,35 @@ io.on('connection', (socket) => {
       if (session) {
         const user = session.users.get(socket.id);
         if (user) {
-          console.log(`👋 [LEAVE] "${user.username}" leaving session "${socket.sessionId}"`);
+          addLog('session', `"${user.username}" left session "${socket.sessionId}" (${session.users.size - 1} users remaining)`);
           session.users.delete(socket.id);
           session.lastActivity = Date.now();
           socket.to(socket.sessionId).emit('user-left', {
             message: `${user.username} left the session`
           });
-          console.log(`📊 [SESSION] "${socket.sessionId}" now has ${session.users.size} user(s)`);
-          
-          if (session.users.size === 0) {
-            console.log(`⏰ [TIMER] Session "${socket.sessionId}" has no users. Will be deleted after 10 minutes of inactivity.`);
-          }
         }
       }
       socket.leave(socket.sessionId);
       delete socket.sessionId;
     }
-    logSessions();
   });
   
   socket.on('disconnect', () => {
-    console.log(`🔌 [DISCONNECT] Client disconnected: ${socket.id} (${socket.username || 'unknown'})`);
+    addLog('connection', `Client disconnected: ${socket.id} (${socket.username || 'unknown'})`);
     
     if (socket.sessionId) {
       const session = sessions.get(socket.sessionId);
       if (session) {
         const user = session.users.get(socket.id);
         if (user) {
-          console.log(`👋 [DISCONNECT] "${user.username}" disconnected from session "${socket.sessionId}"`);
+          addLog('session', `"${user.username}" disconnected from "${socket.sessionId}" (${session.users.size - 1} users remaining)`);
           session.users.delete(socket.id);
           socket.to(socket.sessionId).emit('user-left', {
             message: `${user.username} disconnected`
           });
-          
-          if (session.users.size === 0) {
-            console.log(`⏰ [TIMER] Session "${socket.sessionId}" has no users. Will be deleted after 10 minutes.`);
-          }
         }
       }
     }
-    logSessions();
   });
 });
 
@@ -437,11 +431,12 @@ app.get('/health', (req, res) => {
       users: totalUsers,
       memoryMB: (totalMemory / 1024 / 1024).toFixed(2),
       nodeMemoryMB: (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)
-    }
+    },
+    uptime: process.uptime()
   });
 });
 
-// Serve index.html for all other routes
+// Serve index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(publicPath, 'index.html'));
 });
@@ -452,9 +447,11 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 FILE EXCHANGE SERVER RUNNING`);
   console.log('='.repeat(60));
   console.log(`📍 Port: ${PORT}`);
-  console.log(`📍 Local: http://localhost:${PORT}`);
-  console.log(`📍 Static files: ${publicPath}`);
-  console.log(`📊 Stats endpoint: http://localhost:${PORT}/api/stats`);
-  console.log(`💾 Memory monitoring active (logs every minute)`);
+  console.log(`📍 URL: http://localhost:${PORT}`);
+  console.log(`📊 Stats: http://localhost:${PORT}/api/stats`);
+  console.log(`📋 Logs: http://localhost:${PORT}/api/logs`);
   console.log('='.repeat(60) + '\n');
+  
+  // Initial stats log
+  logStats();
 });
